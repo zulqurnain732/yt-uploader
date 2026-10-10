@@ -2,7 +2,9 @@ name: Shorts Auto Upload
 
 on:
   push:
-    branches: [ main, master ]
+    paths:
+      - 'uploader.py'
+      - '.github/workflows/upload_shorts.yml'
   schedule:
     - cron: '0 */2 * * *'
   workflow_dispatch:
@@ -12,19 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
-      - name: Install dependencies
-        run: |
+      - run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg
-          pip install google-api-python-client google-auth gdown requests
-
-      - name: Run Shorts Upload
-        env:
+          pip install google-api-python-client google-auth requests yt-dlp
+      - env:
           YT_TOKEN_JSON: ${{ secrets.YT_TOKEN_JSON }}
         run: python uploader.py short
-        
