@@ -4,11 +4,12 @@ import json
 import random
 import subprocess
 import time
+import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# YouTube OAuth Auth Setup
+# YouTube OAuth Setup
 token_info = json.loads(os.environ["YT_TOKEN_JSON"])
 creds = Credentials(
     token=None,
@@ -20,10 +21,32 @@ creds = Credentials(
 youtube = build("youtube", "v3", credentials=creds)
 
 def download_drive_video(file_id, output_path):
-    # yt-dlp ke zariye direct clean video download taake corrupt HTML file na aaye
-    drive_url = f"https://drive.google.com/file/d/{file_id}/view"
-    subprocess.run(["yt-dlp", "-o", output_path, drive_url], check=True)
-    print(f"Video file downloaded cleanly to {output_path}")
+    print("Downloading video from Google Drive...")
+    session = requests.Session()
+    url = "https://drive.usercontent.google.com/download"
+    params = {'id': file_id, 'export': 'download', 'confirm': 't'}
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    
+    response = session.get(url, params=params, headers=headers, stream=True)
+    
+    # Fallback to standard url if needed
+    if response.status_code != 200:
+        url_alt = "https://docs.google.com/uc?export=download"
+        response = session.get(url_alt, params={'id': file_id, 'confirm': 'yes'}, headers=headers, stream=True)
+    
+    with open(output_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                f.write(chunk)
+                
+    file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+    print(f"Downloaded successfully! File size: {file_size_mb:.2f} MB")
+    
+    if file_size_mb < 1.0:
+        raise Exception("Download failed: File size too small (Google Drive virus scan warning block).")
 
 def upload_to_youtube(file_path, title, description, tags, thumbnail_path=None):
     body = {
@@ -48,7 +71,7 @@ def upload_to_youtube(file_path, title, description, tags, thumbnail_path=None):
             print(f"Uploading: {int(status.progress() * 100)}%")
             
     video_id = response.get("id")
-    print(f"Video Uploaded Successfully! ID: {video_id}")
+    print(f"Uploaded Successfully! Video ID: {video_id}")
     
     if thumbnail_path and os.path.exists(thumbnail_path):
         try:
@@ -56,24 +79,24 @@ def upload_to_youtube(file_path, title, description, tags, thumbnail_path=None):
                 videoId=video_id,
                 media_body=MediaFileUpload(thumbnail_path, mimetype="image/jpeg")
             ).execute()
-            print("Thumbnail Attached Successfully!")
+            print("Thumbnail attached successfully!")
         except Exception as e:
-            print(f"Thumbnail note: {e}")
+            print(f"Thumbnail notice: {e}")
 
 def run():
     mode = sys.argv[1] if len(sys.argv) > 1 else "video"
     file_id = "1_Xdyd1EQqfmiU-rHj9zQkE6ezZc6Y4Zr"
     raw_video = "source_video.mp4"
     
-    if not os.path.exists(raw_video) or os.path.getsize(raw_video) < 50000:
+    if not os.path.exists(raw_video) or os.path.getsize(raw_video) < 1024 * 1024:
         download_drive_video(file_id, raw_video)
         
     part_num = int(time.time()) % 10000
     
     if mode == "video":
         thumb_img = "thumbnail.jpg"
-        # First frame ko high quality thumbnail k tor par extract karein
-        subprocess.run(["ffmpeg", "-y", "-ss", "00:00:05", "-i", raw_video, "-vframes", "1", thumb_img], check=True)
+        # Video ke pehle achhe frame se HD thumbnail create karna
+        subprocess.run(["ffmpeg", "-y", "-ss", "00:00:03", "-i", raw_video, "-vframes", "1", thumb_img], check=True)
         
         title = f"Surah Ar-Rahman Full Recitation | Beautiful Heart Touching Voice #{part_num}"
         description = (
@@ -86,30 +109,4 @@ def run():
             "Surah Rehman Full", "Beautiful Recitation", "Quran", 
             "Peaceful Quran", "Surah Rahman Recitation", "Islamic"
         ]
-        upload_to_youtube(raw_video, title, description, tags, thumbnail_path=thumb_img)
-        
-    elif mode == "short":
-        short_video = "short_clip.mp4"
-        start_time = random.randint(10, 45)
-        
-        # 9:16 vertical crop with standard h264/aac encoding for YouTube Shorts
-        cmd = [
-            "ffmpeg", "-y", "-ss", str(start_time), "-t", "45",
-            "-i", raw_video,
-            "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-            "-c:a", "aac", "-b:a", "128k",
-            short_video
-        ]
-        subprocess.run(cmd, check=True)
-        
-        title = f"Surah Ar-Rahman Recitation ❤️ #Shorts #{part_num}"
-        description = (
-            "Most beautiful Quran recitation - Surah Ar-Rahman.\n\n"
-            "#Shorts #SurahRahman #Quran #IslamicShorts #QuranRecitation"
-        )
-        tags = ["Shorts", "Surah Rahman", "Quran", "IslamicShorts", "ViralShorts"]
-        upload_to_youtube(short_video, title, description, tags)
-
-if __name__ == "__main__":
-    run()
+        upload_to_youtube
