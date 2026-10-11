@@ -1,140 +1,146 @@
 import os
-import sys
+import re
 import json
 import random
-import subprocess
-import time
 import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# YouTube OAuth Setup
-token_info = json.loads(os.environ["YT_TOKEN_JSON"])
-creds = Credentials(
-    token=None,
-    refresh_token=token_info["refresh_token"],
-    token_uri=token_info["token_uri"],
-    client_id=token_info["client_id"],
-    client_secret=token_info["client_secret"]
-)
-youtube = build("youtube", "v3", credentials=creds)
+CLIENT_ID = os.environ.get("CLIENT_ID")
+CLIENT_SECRET = os.environ.get("CLIENT_SECRET")
+REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN")
+GDRIVE_API_KEY = os.environ.get("GDRIVE_API_KEY")
 
-def download_drive_file(file_id, output_path):
-    print(f"Downloading from Google Drive to {output_path}...")
-    session = requests.Session()
-    
-    # Direct Google Drive streaming URL
-    url = "https://drive.usercontent.google.com/download"
-    params = {'id': file_id, 'export': 'download', 'confirm': 't'}
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    }
-    
-    response = session.get(url, params=params, headers=headers, stream=True)
-    
-    # Fallback endpoint agar Google direct block kare
-    if response.status_code != 200:
-        url_alt = "https://docs.google.com/uc?export=download"
-        response = session.get(url_alt, params={'id': file_id, 'confirm': 'yes'}, headers=headers, stream=True)
-        
-    with open(output_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
+TRACKER_FILE = "uploaded.json"
+FOLDER_ID = "1nbXalCCa3umvQmrhzRogjvnSz-zMYfHj"
+
+creds = Credentials(
+    None,
+    refresh_token=REFRESH_TOKEN,
+    token_uri="https://oauth2.googleapis.com/token",
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET
+)
+youtube_service = build('youtube', 'v3', credentials=creds)
+drive_service = build('drive', 'v3', developerKey=GDRIVE_API_KEY)
+
+if os.path.exists(TRACKER_FILE):
+    try:
+        with open(TRACKER_FILE, "r") as f:
+            uploaded_files = set(json.load(f))
+    except Exception:
+        uploaded_files = set()
+else:
+    uploaded_files = set()
+
+print("Fetching folder items via Google Drive API...")
+query = f"'{FOLDER_ID}' in parents and trashed = false"
+response = drive_service.files().list(
+    q=query,
+    pageSize=100,
+    fields="files(id, name, mimeType, shortcutDetails)"
+).execute()
+
+items = response.get('files', [])
+ignored_names = ["1m $ earning", "400  free reels bundle", "4000 free courses"]
+
+def extract_number(filename):
+    nums = re.findall(r'\d+', filename)
+    return int(nums[0]) if nums else 999999
+
+valid_videos = []
+for item in items:
+    name = item.get('name', '')
+    lower_name = name.lower()
+    if any(ign in lower_name for ign in ignored_names):
+        continue
+
+    if item.get('mimeType') == 'application/vnd.google-apps.shortcut':
+        shortcut_details = item.get('shortcutDetails', {})
+        target_id = shortcut_details.get('targetId')
+        target_mime = shortcut_details.get('targetMimeType', '')
+        if target_id and ('video' in target_mime or name.endswith('.mp4')):
+            valid_videos.append({'name': name, 'id': target_id})
+    elif 'video' in item.get('mimeType', '') or name.endswith('.mp4'):
+        valid_videos.append({'name': name, 'id': item['id']})
+
+valid_videos.sort(key=lambda x: extract_number(x['name']))
+pending_videos = [v for v in valid_videos if v['name'] not in uploaded_files]
+
+print(f"Total video shortcuts found: {len(valid_videos)}")
+print(f"Pending to upload: {len(pending_videos)}")
+
+if not pending_videos:
+    print("Koi nayi video pending nahi hai!")
+    exit(0)
+
+target = pending_videos[0]
+target_name = target['name']
+target_id = target['id']
+
+print(f"\nTarget Video Selected: {target_name} (Resolved File ID: {target_id})")
+
+local_video_file = "video_to_upload.mp4"
+print("Downloading video stream...")
+
+download_url = f"https://www.googleapis.com/drive/v3/files/{target_id}?alt=media&key={GDRIVE_API_KEY}"
+with requests.get(download_url, stream=True) as r:
+    r.raise_for_status()
+    with open(local_video_file, 'wb') as f:
+        for chunk in r.iter_content(chunk_size=1024 * 1024):
             if chunk:
                 f.write(chunk)
-                
-    file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
-    print(f"Download complete: {output_path} ({file_size_mb:.2f} MB)")
-    if file_size_mb < 0.05:
-        raise Exception(f"File too small ({file_size_mb:.2f} MB), check Google Drive link sharing permissions.")
 
-def upload_to_youtube(file_path, title, description, tags, thumbnail_path=None):
-    body = {
-        "snippet": {
-            "title": title,
-            "description": description,
-            "tags": tags,
-            "categoryId": "22"
-        },
-        "status": {
-            "privacyStatus": "public"
-        }
+file_size_mb = os.path.getsize(local_video_file) / (1024 * 1024)
+print(f"Downloaded successfully! File size: {file_size_mb:.2f} MB")
+
+roblox_titles = [
+    "Most Insane Roblox Moment! 😱 #roblox #shorts",
+    "Only 1% Can Beat This Roblox Obby! 🔥 #roblox #shorts",
+    "Roblox Funniest Gameplay Ever 😂 #roblox #shorts",
+    "You Won't Believe What Happened in Roblox! 🤯 #roblox #shorts",
+    "Crazy Roblox Glitch You Must Try! 🎮 #roblox #shorts",
+    "Roblox Pro vs Noob Moment 💀 #roblox #shorts",
+    "Top Secret Roblox Trick Revealed! ⚡ #roblox #shorts",
+    "Roblox Impossible Challenge Cleared! 🏆 #roblox #shorts",
+    "Best Roblox Avatar & Animation! ✨ #roblox #shorts",
+    "Roblox Chaos at its Peak! 🚀 #roblox #shorts"
+]
+
+description_text = """Check out this epic Roblox gameplay! 🎮
+Subscribe for more daily Roblox Shorts and gaming moments.
+
+#roblox #robloxshorts #gaming #robloxtrend #shorts #viral"""
+
+tags_list = ["roblox", "roblox shorts", "roblox funny moments", "gaming", "shorts", "roblox gameplay", "trending"]
+
+title = random.choice(roblox_titles)
+body = {
+    'snippet': {
+        'title': title,
+        'description': description_text,
+        'tags': tags_list,
+        'categoryId': '20'
+    },
+    'status': {
+        'privacyStatus': 'public'
     }
-    
-    media = MediaFileUpload(file_path, mimetype="video/mp4", chunksize=1024 * 1024 * 5, resumable=True)
-    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
-    
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            print(f"Upload progress: {int(status.progress() * 100)}%")
-            
-    video_id = response.get("id")
-    print(f"Video uploaded successfully! Video ID: {video_id}")
-    
-    if thumbnail_path and os.path.exists(thumbnail_path):
-        try:
-            youtube.thumbnails().set(
-                videoId=video_id,
-                media_body=MediaFileUpload(thumbnail_path, mimetype="image/jpeg")
-            ).execute()
-            print("Thumbnail applied successfully!")
-        except Exception as e:
-            print(f"Thumbnail notice: {e}")
+}
 
-def run():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "video"
-    
-    video_drive_id = "13STb9Kb_PldhzCoxpy9iebpGKsaTkPvs"
-    thumb_drive_id = "1_Xdyd1EQqfmiU-rHj9zQkE6ezZc6Y4Zr"
-    
-    raw_video = "source_video.mp4"
-    if not os.path.exists(raw_video) or os.path.getsize(raw_video) < 1024 * 1024:
-        download_drive_file(video_drive_id, raw_video)
-        
-    part_id = int(time.time()) % 10000
-    
-    if mode == "video":
-        thumb_img = "custom_thumbnail.jpg"
-        if not os.path.exists(thumb_img):
-            download_drive_file(thumb_drive_id, thumb_img)
-            
-        title = f"Surah Ar-Rahman Full Recitation | Beautiful Heart Touching Voice #{part_id}"
-        description = (
-            "Surah Ar-Rahman (سورة الرحمن) recitation.\n"
-            "Listen to the peaceful and beautiful Quran recitation.\n\n"
-            "#SurahRahman #Quran #SurahArRahman #QuranRecitation #Islamic"
-        )
-        tags = [
-            "Surah Rahman", "Surah Ar-Rahman", "Quran Recitation",
-            "Surah Rehman Full", "Beautiful Quran Recitation", "Quran Tilawat",
-            "Peaceful Recitation", "Islamic"
-        ]
-        upload_to_youtube(raw_video, title, description, tags, thumbnail_path=thumb_img)
-        
-    elif mode == "short":
-        short_video = "short_clip.mp4"
-        start_time = random.randint(15, 60)
-        
-        # 9:16 Portrait crop for YouTube Shorts
-        cmd = [
-            "ffmpeg", "-y", "-ss", str(start_time), "-t", "45",
-            "-i", raw_video,
-            "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-            "-c:a", "aac", "-b:a", "128k",
-            short_video
-        ]
-        subprocess.run(cmd, check=True)
-        
-        title = f"Surah Ar-Rahman Recitation ❤️ #Shorts #{part_id}"
-        description = (
-            "Beautiful Quran recitation of Surah Ar-Rahman.\n\n"
-            "#Shorts #SurahRahman #Quran #IslamicShorts #QuranRecitation"
-        )
-        tags = ["Shorts", "Surah Rahman", "Quran", "IslamicShorts", "ViralShorts"]
-        upload_to_youtube(short_video, title, description, tags)
+print(f"YouTube par upload jaari hai: {title}")
+media = MediaFileUpload(local_video_file, chunksize=-1, resumable=True, mimetype='video/mp4')
+response = youtube_service.videos().insert(
+    part=','.join(body.keys()),
+    body=body,
+    media_body=media
+).execute()
 
-if __name__ == "__main__":
-    run()
+print(f"Success! Video Uploaded successfully. ID: {response.get('id')}")
+
+uploaded_files.add(target_name)
+with open(TRACKER_FILE, "w") as f:
+    json.dump(list(uploaded_files), f, indent=2)
+
+if os.path.exists(local_video_file):
+    os.remove(local_video_file)
